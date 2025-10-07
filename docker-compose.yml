@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: nlp_query_postgres
+    environment:
+      POSTGRES_DB: employee_db
+      POSTGRES_USER: nlp_user
+      POSTGRES_PASSWORD: nlp_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - nlp_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nlp_user -d employee_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache (Optional)
+  redis:
+    image: redis:7-alpine
+    container_name: nlp_query_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - nlp_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nlp_query_backend
+    environment:
+      DATABASE_URL: postgresql://nlp_user:nlp_password@postgres:5432/employee_db
+      REDIS_URL: redis://redis:6379/0
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      DEBUG: "False"
+      CACHE_ENABLED: "True"
+      MAX_FILE_SIZE_MB: 10
+    volumes:
+      - ./backend:/app
+      - uploaded_documents:/app/uploads
+      - model_cache:/root/.cache
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - nlp_network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nlp_query_frontend
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - nlp_network
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  # Nginx Reverse Proxy (Production)
+  nginx:
+    image: nginx:alpine
+    container_name: nlp_query_nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - nlp_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  uploaded_documents:
+    driver: local
+  model_cache:
+    driver: local
+
+networks:
+  nlp_network:
+    driver: bridge
