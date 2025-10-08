@@ -4,11 +4,11 @@ A production-ready natural language query system with dynamic schema discovery.
 
 ## Features
 
-- 🔍 Dynamic Schema Discovery - No hard-coding required
-- 💬 Natural Language Processing - Plain English to SQL
-- 📄 Document Intelligence - Process PDFs, DOCX, CSV
-- ⚡ High Performance - Query caching, <2s response times
-- 🚀 Production Ready - Error handling, logging, metrics
+- Dynamic Schema Discovery - No hard-coding required
+- Natural Language Processing - Plain English to SQL
+- Document Intelligence - Process PDFs, DOCX, CSV
+- High Performance - Query caching, <2s response times
+- Production Ready - Error handling, logging, metrics
 
 ## Quick Start
 
