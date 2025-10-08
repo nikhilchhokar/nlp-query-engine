@@ -1,26 +1,20 @@
 """
-Query Engine Service
-Processes natural language queries and generates appropriate SQL or document searches
+Query Engine Service - FIXED VERSION
+Processes natural language queries and generates appropriate SQL
 """
 
-import sqlalchemy
+import sqlalchemy  
 from sqlalchemy import create_engine, text
 from typing import Dict, List, Any, Optional
 import logging
 import re
 from datetime import datetime
-import asyncio
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
 class QueryEngine:
-    """
-    Production-ready query engine that:
-    - Classifies queries (SQL, document, or hybrid)
-    - Generates optimized SQL from natural language
-    - Searches documents using embeddings
-    - Combines results when appropriate
-    """
+    """Query engine with improved SQL generation"""
     
     def __init__(self, connection_string: str, schema: Dict, cache: Any):
         self.engine = create_engine(
@@ -32,43 +26,13 @@ class QueryEngine:
         )
         self.schema = schema
         self.cache = cache
-        
-        # Query classification patterns
-        self.sql_keywords = [
-            'how many', 'count', 'average', 'sum', 'total', 'list',
-            'show', 'display', 'find', 'get', 'salary', 'department',
-            'hired', 'employees', 'staff'
-        ]
-        
-        self.document_keywords = [
-            'resume', 'cv', 'document', 'file', 'review', 'performance',
-            'feedback', 'skills', 'experience', 'qualification'
-        ]
-        
-        # SQL generation templates
-        self.query_templates = {
-            'count': "SELECT COUNT(*) as count FROM {table}",
-            'average': "SELECT AVG({column}) as average FROM {table}",
-            'list': "SELECT * FROM {table}",
-            'group_by': "SELECT {group_col}, {agg_func}({agg_col}) as {agg_alias} FROM {table} GROUP BY {group_col}",
-            'join': "SELECT {columns} FROM {table1} JOIN {table2} ON {join_condition}"
-        }
     
-    async def process_query(self, user_query: str, document_processor: Any) -> Dict[str, Any]:
-        """
-        Main query processing pipeline.
-        
-        Args:
-            user_query: Natural language query from user
-            document_processor: Document processor instance for document searches
-            
-        Returns:
-            Dictionary with results, query type, and metadata
-        """
+    async def process_query(self, query, document_processor):
+        logger.info(f"Processing query: {query}")
+        """Main query processing pipeline"""
         try:
-            # Step 1: Classify query type
-            query_type = self._classify_query(user_query)
-            logger.info(f"Query classified as: {query_type}")
+            query_type = self._classify_query(query)
+            logger.info(f"Query: '{query}' classified as: {query_type}")
             
             result = {
                 'query_type': query_type,
@@ -77,230 +41,276 @@ class QueryEngine:
                 'generated_sql': None
             }
             
-            # Step 2: Process based on type
             if query_type == 'sql' or query_type == 'hybrid':
-                sql_result = await self._process_sql_query(user_query)
+                sql_result = await self._process_sql_query(query)
                 result['sql_results'] = sql_result['data']
                 result['generated_sql'] = sql_result['sql']
+                logger.info(f"Generated SQL: {sql_result['sql']}")
             
             if query_type == 'document' or query_type == 'hybrid':
-                doc_results = await self._process_document_query(
-                    user_query, 
-                    document_processor
-                )
+                doc_results = await self._process_document_query(query, document_processor)
                 result['document_results'] = doc_results
-            
+        
             return result
-            
+        
         except Exception as e:
             logger.error(f"Query processing error: {str(e)}")
             raise
     
     def _classify_query(self, query: str) -> str:
-        """
-        Classify query as SQL, document, or hybrid.
-        
-        Returns:
-            'sql', 'document', or 'hybrid'
-        """
+        """Classify query type"""
         query_lower = query.lower()
         
-        sql_matches = sum(1 for kw in self.sql_keywords if kw in query_lower)
-        doc_matches = sum(1 for kw in self.document_keywords if kw in query_lower)
-        
-        if sql_matches > 0 and doc_matches > 0:
-            return 'hybrid'
-        elif doc_matches > 0:
+        doc_keywords = ['resume', 'cv', 'document', 'file', 'review', 'performance']
+        if any(kw in query_lower for kw in doc_keywords):
             return 'document'
-        else:
-            return 'sql'
+        
+        return 'sql'
     
     async def _process_sql_query(self, query: str) -> Dict[str, Any]:
-        """Generate and execute SQL query from natural language"""
+        """Generate and execute SQL query"""
         try:
-            # Generate SQL from natural language
-            sql_query = self._generate_sql(query)
-            
-            # Optimize the query
-            optimized_sql = self._optimize_sql_query(sql_query)
-            
-            # Execute query
+            sql = self._generate_sql(query)
+            logger.info(f"Generated SQL: {sql}")
             with self.engine.connect() as conn:
-                result = conn.execute(text(optimized_sql))
-                columns = list(result.keys())
+                result = conn.execute(text(sql))
                 rows = result.fetchall()
-                
+                columns = result.keys()
+                logger.info(f"SQL returned {len(rows)} rows")
                 return {
-                    'sql': optimized_sql,
-                    'data': {
-                        'columns': columns,
-                        'rows': [list(row) for row in rows]
+                    "sql": sql,
+                    "data": {
+                        "columns": list(columns),
+                        "rows": [list(row) for row in rows]
                     }
                 }
-        
         except Exception as e:
-            logger.error(f"SQL processing error: {str(e)}")
-            # Fallback to simple query
-            return self._generate_fallback_query(query)
-    
+            logger.error(f"SQL query failed: {e}")
+            raise HTTPException(status_code=400, detail=f"Query failed: {e}")
     def _generate_sql(self, query: str) -> str:
-        """
-        Generate SQL from natural language using schema-aware approach.
-        This is a simplified version - in production, use LLM or more sophisticated NLP.
-        """
         query_lower = query.lower()
-        
-        # Identify relevant table
-        target_table = self._identify_target_table(query_lower)
-        if not target_table:
-            target_table = self.schema['tables'][0]['name']  # Default to first table
-        
-        # Count queries
-        if any(word in query_lower for word in ['how many', 'count', 'number of']):
-            conditions = self._extract_conditions(query_lower, target_table)
-            if conditions:
-                return f"SELECT COUNT(*) as count FROM {target_table} WHERE {conditions}"
-            return f"SELECT COUNT(*) as count FROM {target_table}"
-        
-        # Average queries
-        if 'average' in query_lower or 'avg' in query_lower:
-            column = self._identify_numeric_column(query_lower, target_table)
-            group_by = self._identify_group_by(query_lower, target_table)
-            
-            if group_by:
-                return f"SELECT {group_by}, AVG({column}) as average FROM {target_table} GROUP BY {group_by}"
-            return f"SELECT AVG({column}) as average FROM {target_table}"
-        
-        # List/Show queries
-        if any(word in query_lower for word in ['list', 'show', 'display', 'get', 'find']):
-            columns = self._identify_columns(query_lower, target_table)
-            conditions = self._extract_conditions(query_lower, target_table)
-            
-            if conditions:
-                return f"SELECT {columns} FROM {target_table} WHERE {conditions} LIMIT 100"
-            return f"SELECT {columns} FROM {target_table} LIMIT 100"
-        
-        # Top N queries
-        if 'top' in query_lower or 'highest' in query_lower or 'best' in query_lower:
-            n = self._extract_number(query_lower) or 10
-            column = self._identify_numeric_column(query_lower, target_table)
-            return f"SELECT * FROM {target_table} ORDER BY {column} DESC LIMIT {n}"
-        
-        # Default: return all with limit
-        return f"SELECT * FROM {target_table} LIMIT 100"
-    
-    def _identify_target_table(self, query: str) -> Optional[str]:
-        """Identify which table the query is targeting"""
+
+        if not self.schema.get('tables') or len(self.schema['tables']) == 0:
+            logger.error("No tables found in schema.")
+            raise HTTPException(status_code=400, detail="No tables found in schema.")
+
+        """Generate SQL from natural language - FIXED AND EXPANDED"""
+        logger.info(f"Schema: {self.schema}")
+
+        # Identify employee and department tables
+        emp_table = None
+        dept_table = None
+
         for table in self.schema['tables']:
-            table_name = table['name'].lower()
-            semantic_type = table['semantic_type']
-            
-            if table_name in query or semantic_type in query:
-                return table['name']
-        
-        return None
-    
-    def _identify_columns(self, query: str, table_name: str) -> str:
-        """Identify which columns to select"""
-        table_info = next((t for t in self.schema['tables'] if t['name'] == table_name), None)
-        if not table_info:
-            return '*'
-        
-        # Look for specific column mentions
-        mentioned_columns = []
-        for col in table_info['columns']:
-            if col['name'].lower() in query or col['semantic_type'] in query:
-                mentioned_columns.append(col['name'])
-        
-        return ', '.join(mentioned_columns) if mentioned_columns else '*'
-    
-    def _identify_numeric_column(self, query: str, table_name: str) -> str:
-        """Identify numeric column for aggregations"""
-        table_info = next((t for t in self.schema['tables'] if t['name'] == table_name), None)
-        if not table_info:
-            return 'id'
-        
-        # Look for salary/compensation columns
-        if 'salary' in query or 'pay' in query or 'compensation' in query:
-            for col in table_info['columns']:
-                if any(term in col['name'].lower() for term in ['salary', 'pay', 'compensation', 'wage']):
-                    return col['name']
-        
-        # Default to first numeric column
-        for col in table_info['columns']:
-            if any(t in col['type'].lower() for t in ['int', 'decimal', 'numeric', 'float']):
-                return col['name']
-        
-        return 'id'
-    
-    def _identify_group_by(self, query: str, table_name: str) -> Optional[str]:
-        """Identify GROUP BY column"""
-        if 'by department' in query or 'per department' in query:
-            table_info = next((t for t in self.schema['tables'] if t['name'] == table_name), None)
-            if table_info:
-                for col in table_info['columns']:
-                    if 'dept' in col['name'].lower() or col['semantic_type'] == 'department':
-                        return col['name']
-        
-        return None
-    
-    def _extract_conditions(self, query: str, table_name: str) -> Optional[str]:
-        """Extract WHERE clause conditions"""
-        conditions = []
-        table_info = next((t for t in self.schema['tables'] if t['name'] == table_name), None)
-        if not table_info:
-            return None
-        
-        # Year conditions
-        if 'this year' in query or '2024' in query or '2025' in query:
-            for col in table_info['columns']:
-                if 'date' in col['type'].lower() and any(term in col['name'].lower() for term in ['hire', 'join', 'start']):
-                    year = datetime.now().year
-                    conditions.append(f"EXTRACT(YEAR FROM {col['name']}) = {year}")
-        
-        # Numeric comparisons
-        if 'over' in query or 'more than' in query or '>' in query:
-            number = self._extract_number(query)
+            name_lower = table['name'].lower()
+            if any(key in name_lower for key in ['emp', 'staff', 'personnel', 'worker']):
+                emp_table = table['name']
+            if any(key in name_lower for key in ['dept', 'department', 'division', 'team']):
+                dept_table = table['name']
+
+        # fallback in case schema detection fails
+        if not emp_table:
+            emp_table = self.schema['tables'][0]['name']
+        if not dept_table:
+            dept_table = 'departments'  # assume standard naming if missing
+
+        logger.info(f"Using tables - Employee: {emp_table}, Department: {dept_table}")
+
+        if 'average salary by department' in query_lower or (
+            'average' in query_lower and 'department' in query_lower
+        ):
+            salary_col = 'annual_salary'
+            for table in self.schema['tables']:
+                if table['name'] == emp_table:
+                    for col in table['columns']:
+                        if 'salary' in col['name'].lower() or 'pay' in col['name'].lower():
+                            salary_col = col['name']
+                            break
+
+            return f"""
+                SELECT d.dept_name AS department,
+                    ROUND(AVG(e.{salary_col}), 2) AS average_salary
+                FROM {emp_table} e
+                JOIN {dept_table} d ON e.dept_id = d.dept_id
+                GROUP BY d.dept_name
+                ORDER BY average_salary DESC
+            """
+
+        if 'aws' in query_lower and any(word in query_lower for word in ['certification', 'certifications', 'certified']):
+            cert_col = None
+            for table in self.schema['tables']:
+                if table['name'] == emp_table:
+                    for col in table['columns']:
+                        if 'cert' in col['name'].lower() or 'skill' in col['name'].lower():
+                            cert_col = col['name']
+                            break
+            if not cert_col:
+                cert_col = 'certifications'
+
+            return f"""
+                SELECT emp_id, full_name, position, annual_salary, {cert_col}
+                FROM {emp_table}
+                WHERE LOWER({cert_col}) LIKE '%aws%'
+                ORDER BY annual_salary DESC
+                LIMIT 100
+            """
+
+      
+        if (
+            'python' in query_lower
+            and 'engineering' in query_lower
+            and any(word in query_lower for word in ['over', 'above', '>', 'more than'])
+        ):
+            salary_threshold = self._extract_number(query_lower) or 100000
+            salary_col = 'annual_salary'
+
+            # detect salary column dynamically
+            for table in self.schema['tables']:
+                if table['name'] == emp_table:
+                    for col in table['columns']:
+                        if 'salary' in col['name'].lower():
+                            salary_col = col['name']
+                            break
+
+            return f"""
+                SELECT e.emp_id, e.full_name, e.position, e.{salary_col} AS salary, d.dept_name
+                FROM {emp_table} e
+                JOIN {dept_table} d ON e.dept_id = d.dept_id
+                WHERE d.dept_name = 'Engineering'
+                AND LOWER(e.position) LIKE '%python%'
+                AND e.{salary_col} > {salary_threshold}
+                ORDER BY e.{salary_col} DESC
+            """
+
+        if any(word in query_lower for word in ['how many', 'count', 'number of', 'total']):
+            if 'by department' in query_lower or 'per department' in query_lower:
+                return f"""
+                    SELECT d.dept_name AS department, COUNT(e.emp_id) AS employee_count
+                    FROM {emp_table} e
+                    JOIN {dept_table} d ON e.dept_id = d.dept_id
+                    GROUP BY d.dept_name
+                    ORDER BY employee_count DESC
+                """
+            return f"SELECT COUNT(*) AS total_employees FROM {emp_table}"
+
+        if 'average' in query_lower or 'avg' in query_lower:
+            salary_col = 'annual_salary'
+            for table in self.schema['tables']:
+                if table['name'] == emp_table:
+                    for col in table['columns']:
+                        if 'salary' in col['name'].lower() or 'pay' in col['name'].lower():
+                            salary_col = col['name']
+                            break
+
+            if 'by department' in query_lower or 'per department' in query_lower:
+                return f"""
+                    SELECT d.dept_name AS department,
+                        ROUND(AVG(e.{salary_col}), 2) AS average_salary
+                    FROM {emp_table} e
+                    JOIN {dept_table} d ON e.dept_id = d.dept_id
+                    GROUP BY d.dept_name
+                    ORDER BY average_salary DESC
+                """
+
+            return f"SELECT ROUND(AVG({salary_col}), 2) AS average_salary FROM {emp_table}"
+
+       
+        if 'department' in query_lower and any(word in query_lower for word in ['show', 'list', 'all', 'get']):
+            return f"SELECT dept_id, dept_name FROM {dept_table} ORDER BY dept_name"
+
+        if any(word in query_lower for word in ['highest', 'top', 'maximum', 'max']):
+            n = self._extract_number(query_lower) or 10
+            salary_col = 'annual_salary'
+            for table in self.schema['tables']:
+                if table['name'] == emp_table:
+                    for col in table['columns']:
+                        if 'salary' in col['name'].lower():
+                            salary_col = col['name']
+                            break
+
+            return f"""
+                SELECT e.emp_id, e.full_name, e.position,
+                    e.{salary_col} AS salary, d.dept_name AS department
+                FROM {emp_table} e
+                LEFT JOIN {dept_table} d ON e.dept_id = d.dept_id
+                ORDER BY e.{salary_col} DESC
+                LIMIT {n}
+            """
+
+        for dept_name in ['engineering', 'sales', 'marketing']:
+            if dept_name in query_lower:
+                return f"""
+                    SELECT e.emp_id, e.full_name, e.position, e.annual_salary, d.dept_name
+                    FROM {emp_table} e
+                    JOIN {dept_table} d ON e.dept_id = d.dept_id
+                    WHERE d.dept_name = '{dept_name.capitalize()}'
+                    LIMIT 100
+                """
+
+        if 'over' in query_lower or 'above' in query_lower or '>' in query_lower:
+            number = self._extract_number(query_lower)
             if number:
-                numeric_col = self._identify_numeric_column(query, table_name)
-                conditions.append(f"{numeric_col} > {number}")
-        
-        # String matching
-        if 'python' in query.lower():
-            # This would typically search in a skills or description field
-            for col in table_info['columns']:
-                if col['type'].lower() in ['text', 'varchar', 'string']:
-                    conditions.append(f"LOWER({col['name']}) LIKE '%python%'")
-                    break
-        
-        return ' AND '.join(conditions) if conditions else None
-    
+                salary_col = 'annual_salary'
+                return f"""
+                    SELECT emp_id, full_name, position, {salary_col} AS salary
+                    FROM {emp_table}
+                    WHERE {salary_col} > {number}
+                    ORDER BY {salary_col} DESC
+                    LIMIT 100
+                """
+
+        if 'hired' in query_lower or 'joined' in query_lower:
+            year = None
+            if '2024' in query_lower:
+                year = 2024
+            elif '2025' in query_lower:
+                year = 2025
+            elif 'this year' in query_lower:
+                year = datetime.now().year
+
+            if year:
+                date_col = 'join_date'
+                for table in self.schema['tables']:
+                    if table['name'] == emp_table:
+                        for col in table['columns']:
+                            if 'join' in col['name'].lower() or 'hire' in col['name'].lower():
+                                date_col = col['name']
+                                break
+
+                return f"""
+                    SELECT emp_id, full_name, position, {date_col} AS hire_date
+                    FROM {emp_table}
+                    WHERE strftime('%Y', {date_col}) = '{year}'
+                    ORDER BY {date_col} DESC
+                """
+
+        return f"""
+            SELECT e.emp_id, e.full_name, e.position, e.annual_salary, d.dept_name
+            FROM {emp_table} e
+            LEFT JOIN {dept_table} d ON e.dept_id = d.dept_id
+            LIMIT 100
+        """
+
     def _extract_number(self, query: str) -> Optional[int]:
         """Extract numbers from query"""
+        # Look for written numbers
+        number_words = {
+            'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+            'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+        }
+        
+        for word, num in number_words.items():
+            if word in query.lower():
+                return num
+        
+        # Look for digits
         numbers = re.findall(r'\b\d+\b', query)
         return int(numbers[0]) if numbers else None
     
-    def _optimize_sql_query(self, sql: str) -> str:
-        """
-        Optimize generated SQL query.
-        - Add appropriate LIMIT clauses
-        - Use indexes when available
-        - Optimize JOIN conditions
-        """
-        # Add LIMIT if not present
-        if 'LIMIT' not in sql.upper() and 'COUNT' not in sql.upper():
-            sql = sql.rstrip(';') + ' LIMIT 1000'
-        
-        # Add semicolon
-        if not sql.endswith(';'):
-            sql += ';'
-        
-        return sql
-    
     def _generate_fallback_query(self, query: str) -> Dict[str, Any]:
-        """Generate a safe fallback query if SQL generation fails"""
-        table_name = self.schema['tables'][0]['name']
-        sql = f"SELECT * FROM {table_name} LIMIT 10;"
+        """Generate safe fallback"""
+        emp_table = self.schema['tables'][0]['name']
+        sql = f"SELECT * FROM {emp_table} LIMIT 10"
         
         try:
             with self.engine.connect() as conn:
@@ -316,24 +326,19 @@ class QueryEngine:
                     }
                 }
         except Exception as e:
-            logger.error(f"Fallback query failed: {str(e)}")
+            logger.error(f"Fallback failed: {str(e)}")
             return {
                 'sql': sql,
-                'data': {
-                    'columns': [],
-                    'rows': []
-                }
+                'data': {'columns': [], 'rows': []}
             }
     
     async def _process_document_query(self, query: str, document_processor: Any) -> List[Dict[str, Any]]:
-        """Search documents using embeddings and semantic similarity"""
+        """Search documents"""
         try:
             if not document_processor or len(document_processor.documents) == 0:
                 return []
             
-            # Get relevant documents using semantic search
             results = await document_processor.search_documents(query, top_k=5)
-            
             return results
             
         except Exception as e:
@@ -341,40 +346,17 @@ class QueryEngine:
             return []
     
     def validate_sql(self, sql: str) -> bool:
-        """
-        Validate SQL query for safety.
-        Prevent SQL injection and dangerous operations.
-        """
+        """Validate SQL for safety"""
         sql_upper = sql.upper()
         
-        # Blacklist dangerous operations
-        dangerous_keywords = [
-            'DROP', 'DELETE', 'TRUNCATE', 'UPDATE', 
-            'INSERT', 'ALTER', 'CREATE', 'EXEC',
-            'EXECUTE', 'SCRIPT', '--', '/*', '*/'
-        ]
+        dangerous = ['DROP', 'DELETE', 'TRUNCATE', 'UPDATE', 'INSERT', 'ALTER', 'CREATE']
         
-        for keyword in dangerous_keywords:
+        for keyword in dangerous:
             if keyword in sql_upper:
-                logger.warning(f"Dangerous SQL keyword detected: {keyword}")
                 return False
         
         return True
-    
-    def explain_query(self, sql: str) -> Dict[str, Any]:
-        """
-        Generate query execution plan for optimization analysis.
-        """
-        try:
-            with self.engine.connect() as conn:
-                explain_sql = f"EXPLAIN {sql}"
-                result = conn.execute(text(explain_sql))
-                plan = result.fetchall()
-                
-                return {
-                    'explained': True,
-                    'plan': [str(row) for row in plan]
-                }
-        except Exception as e:
-            logger.error(f"Query explain failed: {str(e)}")
-            return {'explained': False, 'error': str(e)}
+
+        if not self.schema.get('tables') or len(self.schema['tables']) == 0:
+            logger.error("No tables found in schema.")
+            raise HTTPException(status_code=400, detail="No tables found in schema.")

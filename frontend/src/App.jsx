@@ -109,57 +109,39 @@ const NLPQueryEngine = () => {
 
   const executeQuery = async () => {
     if (!query.trim()) return;
-    
+
     setLoading(true);
     const startTime = Date.now();
-    
+
     try {
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
-      const mockResults = {
-        query_type: 'hybrid',
-        sql_results: {
-          columns: ['emp_id', 'full_name', 'position', 'annual_salary', 'dept_name'],
-          rows: [
-            [101, 'Alice Johnson', 'Senior Software Engineer', 120000, 'Engineering'],
-            [142, 'Bob Smith', 'Software Engineer', 95000, 'Engineering'],
-            [203, 'Carol Williams', 'Lead Developer', 135000, 'Engineering'],
-            [87, 'David Brown', 'DevOps Engineer', 110000, 'Engineering'],
-            [156, 'Eve Davis', 'Full Stack Developer', 105000, 'Engineering']
-          ]
-        },
-        document_results: [
-          {
-            doc_name: 'alice_johnson_resume.pdf',
-            excerpt: '...5+ years of Python development experience, proficient in Django, Flask, and FastAPI. Strong background in machine learning...',
-            relevance_score: 0.92
-          },
-          {
-            doc_name: 'bob_smith_resume.pdf',
-            excerpt: '...Python developer with expertise in data engineering and ETL pipelines. Experience with PostgreSQL, Redis, and Docker...',
-            relevance_score: 0.87
-          },
-          {
-            doc_name: 'carol_williams_resume.pdf',
-            excerpt: '...Technical lead specializing in Python microservices architecture. Led team of 5 developers building scalable APIs...',
-            relevance_score: 0.85
-          }
-        ],
-        cache_hit: false,
+      const response = await fetch('http://localhost:8000/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+
+      if (!response.ok) {
+        throw new Error('Query failed');
+      }
+
+      const resultData = await response.json();
+
+      setResults({
+        ...resultData,
+        cache_hit: resultData.cache_hit || false,
         response_time_ms: Date.now() - startTime
-      };
-      
-      setResults(mockResults);
+      });
+
       setQueryHistory(prev => [{
         query,
         timestamp: new Date().toISOString(),
-        responseTime: mockResults.response_time_ms,
-        cacheHit: mockResults.cache_hit
+        responseTime: Date.now() - startTime,
+        cacheHit: resultData.cache_hit || false
       }, ...prev.slice(0, 9)]);
-      
+
       setMetrics(prev => ({
         totalQueries: prev.totalQueries + 1,
-        avgResponseTime: Math.round((prev.avgResponseTime * prev.totalQueries + mockResults.response_time_ms) / (prev.totalQueries + 1)),
+        avgResponseTime: Math.round((prev.avgResponseTime * prev.totalQueries + (Date.now() - startTime)) / (prev.totalQueries + 1)),
         cacheHitRate: prev.cacheHitRate,
         activeConnections: prev.activeConnections
       }));
